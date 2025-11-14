@@ -13,7 +13,7 @@ import {
   StyleSheet,
   Text,
   TouchableOpacity,
-  View
+  View,
 } from "react-native";
 
 const screenWidth = Dimensions.get("window").width;
@@ -488,29 +488,7 @@ export default function App() {
             <Text style={styles.statLabel}>Critical Events</Text>
           </View>
 
-          <View style={styles.statCard}>
-            <View
-              style={[styles.statIconContainer, { backgroundColor: "#f0fdf4" }]}
-            >
-              <Ionicons name="checkmark-circle" size={18} color="#16a34a" />
-            </View>
-            <Text style={[styles.statNumber, { color: "#16a34a" }]}>
-              {"N/A"}
-            </Text>
-            <Text style={styles.statLabel}>Resolved</Text>
-          </View>
-
-          <View style={styles.statCard}>
-            <View
-              style={[styles.statIconContainer, { backgroundColor: "#eff6ff" }]}
-            >
-              <Ionicons name="analytics" size={18} color="#2563eb" />
-            </View>
-            <Text style={[styles.statNumber, { color: "#2563eb" }]}>
-              {"N/A"}
-            </Text>
-            <Text style={styles.statLabel}>Analyzed</Text>
-          </View>
+          {/* REMOVED "Resolved" and "Analyzed" CARDS */}
         </View>
       </View>
 

@@ -11,6 +11,8 @@ import {
   TouchableOpacity,
   View,
 } from 'react-native';
+// ✨ NEW: Import AsyncStorage
+import AsyncStorage from '@react-native-async-storage/async-storage';
 
 // --- Notification Configuration ---
 Notifications.setNotificationHandler({
@@ -31,20 +33,23 @@ interface Notification {
   isRead: boolean;
 }
 
+// ✨ NEW: Add a key for storage
+const NOTIFICATIONS_STORAGE_KEY = '@notification_history';
+
 export default function App() {
-  // const [expoPushToken, setExpoPushToken] = useState(''); // We keep the logic but don't need to show it
   const [notifications, setNotifications] = useState<Notification[]>([]);
+  // ✨ NEW: Add loading state to prevent saving before loading is complete
+  const [isLoading, setIsLoading] = useState(true);
 
   // --- Refs for Listeners ---
-  const notificationListener = useRef();
-  const responseListener = useRef();
+  const notificationListener = useRef<Notifications.Subscription>();
+  const responseListener = useRef<Notifications.Subscription>();
 
   useEffect(() => {
     // --- 1. Get Push Token ---
     registerForPushNotificationsAsync().then(token => {
       if (token) {
-        // setExpoPushToken(token); // State update is no longer needed
-        console.log('📱 Expo Push Token:', token); // Still useful for debugging
+        console.log('📱 Expo Push Token:', token);
       }
     });
 
@@ -59,11 +64,13 @@ export default function App() {
         id: request.identifier,
         title: content.title || 'No Title',
         message: content.body || 'No message',
+        // ✨ Using toLocaleTimeString for consistency when loading
         time: new Date(notification.date).toLocaleTimeString(),
         type: (content.data?.type as any) || 'info', 
         isRead: false,
       };
       
+      // ✨ Use functional update to ensure we're adding to the latest state
       setNotifications(prev => [newNotification, ...prev]);
     });
 
@@ -77,12 +84,47 @@ export default function App() {
       );
     });
 
-    // --- 3. Cleanup ---
+    // --- 3. ✨ MODIFIED: Load notifications from storage on app start ---
+    async function loadNotifications() {
+      try {
+        const savedNotifications = await AsyncStorage.getItem(NOTIFICATIONS_STORAGE_KEY);
+        if (savedNotifications) {
+          setNotifications(JSON.parse(savedNotifications));
+        }
+      } catch (e) {
+        console.error("Failed to load notifications from storage", e);
+      } finally {
+        setIsLoading(false); // We're done loading
+      }
+    }
+    
+    loadNotifications();
+
+    // --- 4. Cleanup ---
     return () => {
       notificationListener.current?.remove();
       responseListener.current?.remove();
     };
-  }, []);
+  }, []); // This effect runs once on mount
+
+  // --- ✨ NEW: Effect to save notifications whenever they change ---
+  useEffect(() => {
+    // Don't save if we are still loading
+    if (isLoading) {
+      return;
+    }
+
+    async function saveNotifications() {
+      try {
+        const jsonValue = JSON.stringify(notifications);
+        await AsyncStorage.setItem(NOTIFICATIONS_STORAGE_KEY, jsonValue);
+      } catch (e) {
+        console.error("Failed to save notifications to storage", e);
+      }
+    }
+
+    saveNotifications();
+  }, [notifications, isLoading]); // Runs when notifications or isLoading changes
 
   // --- Handler Functions from New Design ---
   const markAsRead = (id: string) => {
@@ -101,6 +143,11 @@ export default function App() {
 
   const deleteNotification = (id: string) => {
     setNotifications((prev) => prev.filter((notif) => notif.id !== id));
+  };
+
+  // ✨ Function to clear all notifications
+  const clearAllNotifications = () => {
+    setNotifications([]);
   };
 
   const getNotificationIcon = (type: string) => {
@@ -146,19 +193,32 @@ export default function App() {
             </View>
           )}
         </View>
-        {unreadCount > 0 && (
-          <TouchableOpacity
-            onPress={markAllAsRead}
-            style={styles.markAllButton}
-          >
-            <Ionicons name="checkmark-done" size={16} color="#fff" />
-            <Text style={styles.markAllText}>Mark all read</Text>
-          </TouchableOpacity>
-        )}
+        
+        {/* Wrapper for header buttons */}
+        <View style={styles.headerActions}>
+          {unreadCount > 0 && (
+            <TouchableOpacity
+              onPress={markAllAsRead}
+              style={styles.markAllButton}
+            >
+              <Ionicons name="checkmark-done" size={16} color="#fff" />
+              <Text style={styles.markAllText}>Mark all read</Text>
+            </TouchableOpacity>
+          )}
+
+          {/* Clear All Button */}
+          {notifications.length > 0 && (
+            <TouchableOpacity
+              onPress={clearAllNotifications}
+              style={styles.clearAllButton} 
+            >
+              <Ionicons name="trash-outline" size={16} color="#ef4444" />
+            </TouchableOpacity>
+          )}
+        </View>
+
       </View>
       
-      {/* ✨ TOKEN BOX REMOVED FOR A CLEANER DESIGN ✨ */}
-
       <ScrollView
         style={styles.scrollView}
         contentContainerStyle={styles.scrollContent}
@@ -170,7 +230,7 @@ export default function App() {
             </View>
             <Text style={styles.emptyText}>All clear!</Text>
             <Text style={styles.emptySubtext}>
-              No new notifications{'\n'}Send one to see it appear here!
+              No new notifications{'\n'}Sendss one to see it appear here!
             </Text>
           </View>
         ) : (
@@ -224,7 +284,10 @@ export default function App() {
                   )}
                   <TouchableOpacity
                     style={styles.deleteButton}
-                    onPress={() => deleteNotification(notification.id)}
+                    onPress={(e) => {
+                      e.stopPropagation(); // Prevents card's onPress
+                      deleteNotification(notification.id);
+                    }}
                   >
                     <Ionicons name="close" size={16} color="#94a3b8" />
                   </TouchableOpacity>
@@ -314,6 +377,12 @@ const styles = StyleSheet.create({
     fontSize: 11,
     fontWeight: "700",
   },
+  // Wrapper for header buttons
+  headerActions: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 8,
+  },
   markAllButton: {
     flexDirection: "row",
     alignItems: "center",
@@ -328,13 +397,21 @@ const styles = StyleSheet.create({
     fontSize: 12,
     fontWeight: "600",
   },
-  // ✨ Token Box Styles REMOVED
+  // Style for the 'Clear All' button
+  clearAllButton: {
+    flexDirection: "row",
+    alignItems: "center",
+    padding: 8, // Made it a square-ish icon button
+    backgroundColor: "#fee2e2", // Light red background
+    borderRadius: 8,
+    gap: 4,
+  },
   // Content Styles
   scrollView: {
     flex: 1,
   },
   scrollContent: {
-    padding: 16, // ✨ Reset padding
+    padding: 16,
   },
   // Empty State
   emptyState: {

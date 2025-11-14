@@ -1,11 +1,11 @@
 {
   "expo": {
-    "name": "my-eas-app",
-    "slug": "my-eas-app",
+    "name": "FlameGuard",
+    "slug": "FlameGuard",
     "version": "1.0.0",
     "orientation": "portrait",
-    "icon": "./assets/images/icon.png",
-    "scheme": "myeasapp",
+    "icon": "./assets/images/firelogo.png",
+    "scheme": "flameguard",
     "userInterfaceStyle": "automatic",
     "newArchEnabled": true,
     "ios": {
@@ -14,11 +14,11 @@
     "android": {
       "adaptiveIcon": {
         "backgroundColor": "#E6F4FE",
-        "foregroundImage": "./assets/images/android-icon-foreground.png",
+        "foregroundImage": "./assets/images/firelogo.png",
         "backgroundImage": "./assets/images/android-icon-background.png",
         "monochromeImage": "./assets/images/android-icon-monochrome.png"
       },
-      "package" : "com.justcallmebobby.myEasApp",
+      "package": "com.justcallmebobby.myEasApp",
       "googleServicesFile": "./google-services.json",
       "edgeToEdgeEnabled": true,
       "predictiveBackGestureEnabled": false
@@ -32,7 +32,7 @@
       [
         "expo-splash-screen",
         {
-          "image": "./assets/images/splash-icon.png",
+          "image": "./assets/images/firelogo.png",
           "imageWidth": 200,
           "resizeMode": "contain",
           "backgroundColor": "#ffffff",
@@ -40,7 +40,8 @@
             "backgroundColor": "#000000"
           }
         }
-      ]
+      ],
+      "expo-web-browser"
     ],
     "experiments": {
       "typedRoutes": true,
@@ -49,7 +50,7 @@
     "extra": {
       "router": {},
       "eas": {
-        "projectId": "65b583b2-b9b3-44f1-88de-374d3ed4eb98"
+        "projectId": "607e9b39-94a5-44f2-89e4-708a1432763a"
       }
     },
     "owner": "justcallmebobby1"
