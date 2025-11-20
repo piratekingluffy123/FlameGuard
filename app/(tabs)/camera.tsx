@@ -186,7 +186,7 @@ export default function App() {
           <Text style={styles.statLabel}>Active Camera</Text>
         </View>
 
-        <View style={[styles.statCard]}>
+        {/* <View style={[styles.statCard]}>
           <View
             style={[
               styles.statIconContainer,
@@ -197,9 +197,9 @@ export default function App() {
           </View>
           <Text style={[styles.statNumber]}>{alertCount}</Text>
           <Text style={styles.statLabel}>Fire Alerts</Text>
-        </View>
+        </View> */}
 
-        <View style={styles.statCard}>
+        {/* <View style={styles.statCard}>
           <View
             style={[
               styles.statIconContainer,
@@ -210,7 +210,7 @@ export default function App() {
           </View>
           <Text style={styles.statNumber}>OK</Text>
           <Text style={styles.statLabel}>System Health</Text>
-        </View>
+        </View> */}
       </View>
       {/* End of header */}
 
