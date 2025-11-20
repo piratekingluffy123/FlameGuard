@@ -1,37 +1,159 @@
 import { Ionicons } from "@expo/vector-icons";
+import messaging from '@react-native-firebase/messaging';
 import { CameraView, useCameraPermissions } from "expo-camera";
-import React, { useState } from "react";
+import React, { useEffect, useState } from "react";
 import {
   ActivityIndicator,
   Alert,
   Dimensions,
+  Platform,
   StyleSheet,
   Text,
   TouchableOpacity,
   View,
 } from "react-native";
 import { WebView } from "react-native-webview";
+import { supabase } from '../../services/supabase';
 
 const { width } = Dimensions.get("window");
 
 export default function App() {
   const [permission, requestPermission] = useCameraPermissions();
   const [scanned, setScanned] = useState(false);
-  const [streamUrl, setStreamUrl] = useState(null); // This now means "we are connected"
-  const [scannedUrl, setScannedUrl] = useState(null); // This holds the URL *after* scan
+  const [streamUrl, setStreamUrl] = useState(null);
+  const [scannedUrl, setScannedUrl] = useState(null);
   const [isLoading, setIsLoading] = useState(false);
+  const [fcmToken, setFcmToken] = useState(null);
+  const [hasNotificationPermission, setHasNotificationPermission] = useState(false);
+
+  const storeFCMToken = async (token) => {
+    if (!token) return;
+
+    const { data, error } = await supabase
+      .from('deviceTokens')
+      .upsert(
+        { fcmToken: token },
+        { onConflict: ['fcmToken'] } // <- uses fcmToken as unique key
+      )
+      .select(); // optional: returns the inserted/updated row
+    if (error) console.log('Error storing FCM token:', error);
+    else console.log('FCM token stored:', token);
+  };
+
+  // Request notification permission and get FCM token
+  useEffect(() => {
+    const initializeFCM = async () => {
+      try {
+        // Request notification permission
+        const authStatus = await messaging().requestPermission();
+        const enabled =
+          authStatus === messaging.AuthorizationStatus.AUTHORIZED ||
+          authStatus === messaging.AuthorizationStatus.PROVISIONAL;
+
+        setHasNotificationPermission(enabled);
+
+        if (enabled) {
+          const token = await messaging().getToken();
+          setFcmToken(token);
+          console.log('FCM Token:', token);
+
+          // Store token in Supabase
+          await storeFCMToken(token);
+        } else {
+          console.log('Notification permission denied');
+        }
+
+        // Handle foreground messages
+        const unsubscribeForeground = messaging().onMessage(async remoteMessage => {
+          console.log('Foreground FCM message:', remoteMessage);
+          Alert.alert(
+            remoteMessage.notification?.title || 'Fire Alert',
+            remoteMessage.notification?.body || 'Fire detected!',
+            [{ text: 'OK' }]
+          );
+        });
+
+        // Handle background/quit state messages
+        messaging().setBackgroundMessageHandler(async remoteMessage => {
+          console.log('Background FCM message:', remoteMessage);
+        });
+
+        // Handle notification when app is opened from quit state
+        messaging().getInitialNotification().then(remoteMessage => {
+          if (remoteMessage) {
+            console.log('Initial notification:', remoteMessage);
+          }
+        });
+
+        return unsubscribeForeground;
+      } catch (error) {
+        console.log('Error initializing FCM:', error);
+      }
+    };
+
+    initializeFCM();
+  }, []);
+
+  // Function to send FCM token to your Python server
+  const sendFCMTokenToServer = async (serverUrl, token) => {
+    if (!token) {
+      console.log('No FCM token available');
+      return;
+    }
+
+    try {
+      // Extract base URL without path
+      const baseUrl = serverUrl.split('/').slice(0, 3).join('/');
+      const endpoint = `${baseUrl}/register-device`;
+
+      const payload = {
+        fcm_token: token,
+        device_type: Platform.OS,
+        device_model: Platform.OS === 'ios' ? 'iOS' : 'Android',
+        timestamp: new Date().toISOString()
+      };
+
+      console.log('Sending FCM token to:', endpoint);
+
+      const response = await fetch(endpoint, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify(payload),
+      });
+
+      if (response.ok) {
+        console.log('✅ FCM token sent successfully to server');
+        const responseData = await response.json();
+        console.log('Server response:', responseData);
+      } else {
+        console.log('❌ Failed to send FCM token:', response.status);
+        const errorText = await response.text();
+        console.log('Error response:', errorText);
+      }
+    } catch (error) {
+      console.log('❌ Error sending FCM token:', error);
+    }
+  };
 
   // Handle QR code scan
   const handleBarCodeScanned = ({ data }) => {
     if (scanned) return;
 
-    setScanned(true); // Stop the scanner
+    setScanned(true);
     console.log("📷 QR Code scanned:", data);
 
     // Validate URL
     if (data.startsWith("http://") || data.startsWith("https://")) {
-      // Don't connect yet, just save the scanned URL
       setScannedUrl(data);
+
+      // Send FCM token when QR code is scanned
+      if (fcmToken) {
+        sendFCMTokenToServer(data, fcmToken);
+      } else {
+        console.log('FCM token not available yet');
+      }
     } else {
       Alert.alert(
         "Invalid QR Code",
@@ -39,9 +161,21 @@ export default function App() {
         [
           {
             text: "Scan Again",
-            onPress: () => setScanned(false), // Just reset the scanner
+            onPress: () => setScanned(false),
           },
         ]
+      );
+    }
+  };
+
+  // Manually send FCM token (optional - for testing)
+  const handleManualSendToken = () => {
+    if (scannedUrl && fcmToken) {
+      sendFCMTokenToServer(scannedUrl, fcmToken);
+    } else {
+      Alert.alert(
+        "Cannot Send Token",
+        scannedUrl ? "FCM token not available" : "No server URL available"
       );
     }
   };
@@ -50,7 +184,7 @@ export default function App() {
   const handleScanAgain = () => {
     setScanned(false);
     setStreamUrl(null);
-    setScannedUrl(null); // Also reset the scanned URL
+    setScannedUrl(null);
     setIsLoading(false);
   };
 
@@ -81,9 +215,14 @@ export default function App() {
   if (streamUrl) {
     return (
       <View style={styles.container}>
-        {/* ✨ --- THIS IS THE NEW, CLEAN HEADER --- ✨ */}
+        {/* Header with FCM status */}
         <View style={styles.liveHeader}>
-          <Text style={styles.liveHeaderText}>🔥 Flame Guard Live</Text>
+          <View>
+            <Text style={styles.liveHeaderText}>🔥 Flame Guard Live</Text>
+            <Text style={styles.fcmStatus}>
+              {fcmToken ? '🔔 FCM: Connected' : '🔕 FCM: Disconnected'}
+            </Text>
+          </View>
           <TouchableOpacity
             style={styles.liveScanAgainBtn}
             onPress={handleScanAgain}
@@ -91,7 +230,6 @@ export default function App() {
             <Ionicons name="qr-code-outline" size={24} color="#f97316" />
           </TouchableOpacity>
         </View>
-        {/* ✨ --- END OF NEW HEADER --- ✨ */}
 
         {isLoading && (
           <View style={styles.loadingOverlay}>
@@ -168,15 +306,12 @@ export default function App() {
     );
   }
 
-  // --- Show QR scanner ---
-
-  // Calculate stats based on whether we have a scanned URL
+  // Calculate stats
   const activeCount = scannedUrl ? 1 : 0;
-  const alertCount = 0; // Hardcoded as per your request
 
   return (
     <View style={styles.container}>
-      {/* Stats Header */}
+      {/* Stats Header with FCM Info */}
       <View style={[styles.statsContainer, { paddingTop: 60 }]}>
         <View style={styles.statCard}>
           <View style={styles.statIconContainer}>
@@ -186,33 +321,16 @@ export default function App() {
           <Text style={styles.statLabel}>Active Camera</Text>
         </View>
 
-        {/* <View style={[styles.statCard]}>
-          <View
-            style={[
-              styles.statIconContainer,
-              { backgroundColor: "#f3f4f6" },
-            ]}
-          >
-            <Ionicons name="flame" size={20} color={"#666"} />
+        <View style={styles.statCard}>
+          <View style={[styles.statIconContainer, { backgroundColor: fcmToken ? "#E7F8F3" : "#f3f4f6" }]}>
+            <Ionicons name="notifications" size={20} color={fcmToken ? "#10B981" : "#666"} />
           </View>
-          <Text style={[styles.statNumber]}>{alertCount}</Text>
-          <Text style={styles.statLabel}>Fire Alerts</Text>
-        </View> */}
-
-        {/* <View style={styles.statCard}>
-          <View
-            style={[
-              styles.statIconContainer,
-              { backgroundColor: "#E7F8F3" },
-            ]}
-          >
-            <Ionicons name="shield-checkmark" size={20} color="#10B981" />
-          </View>
-          <Text style={styles.statNumber}>OK</Text>
-          <Text style={styles.statLabel}>System Health</Text>
-        </View> */}
+          <Text style={[styles.statNumber, { color: fcmToken ? "#10B981" : "#666" }]}>
+            {fcmToken ? "ON" : "OFF"}
+          </Text>
+          <Text style={styles.statLabel}>FCM</Text>
+        </View>
       </View>
-      {/* End of header */}
 
       <CameraView
         style={styles.camera}
@@ -231,7 +349,6 @@ export default function App() {
           </View>
         </View>
 
-        {/* Hide instructions if a code is scanned */}
         {!scannedUrl && (
           <View style={styles.instructions}>
             <Text style={styles.instructionText}>
@@ -246,11 +363,33 @@ export default function App() {
         <View style={styles.connectOverlay}>
           <Text style={styles.connectTitle}>✅ QR Code Scanned!</Text>
           <Text style={styles.connectUrl} numberOfLines={1}>{scannedUrl}</Text>
+
+          {/* FCM Token Status */}
+          <View style={styles.tokenStatus}>
+            <Ionicons
+              name={fcmToken ? "checkmark-circle" : "warning"}
+              size={16}
+              color={fcmToken ? "#10B981" : "#f97316"}
+            />
+            <Text style={[styles.tokenStatusText, { color: fcmToken ? "#10B981" : "#f97316" }]}>
+              {fcmToken ? 'FCM token ready' : 'FCM token not available'}
+            </Text>
+          </View>
+
+          {fcmToken && (
+            <TouchableOpacity
+              style={[styles.secondaryButton, { marginBottom: 8 }]}
+              onPress={handleManualSendToken}
+            >
+              <Text style={styles.secondaryButtonText}>Resend FCM Token</Text>
+            </TouchableOpacity>
+          )}
+
           <TouchableOpacity
             style={styles.connectButton}
             onPress={() => {
               setIsLoading(true);
-              setStreamUrl(scannedUrl); // This triggers the screen change
+              setStreamUrl(scannedUrl);
             }}
           >
             <Text style={styles.connectButtonText}>Connect to Stream</Text>
@@ -490,5 +629,33 @@ const styles = StyleSheet.create({
     backgroundColor: "#f1f5f9",
     padding: 8,
     borderRadius: 8,
+  },
+  fcmStatus: {
+    fontSize: 12,
+    color: '#64748b',
+    marginTop: 2,
+  },
+  tokenStatus: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    marginBottom: 8,
+    gap: 6,
+  },
+  tokenStatusText: {
+    fontSize: 12,
+    fontWeight: '500',
+  },
+  secondaryButton: {
+    backgroundColor: '#e2e8f0',
+    paddingVertical: 12,
+    paddingHorizontal: 20,
+    borderRadius: 8,
+    width: '100%',
+    alignItems: 'center',
+  },
+  secondaryButtonText: {
+    color: '#475569',
+    fontSize: 14,
+    fontWeight: '500',
   },
 });

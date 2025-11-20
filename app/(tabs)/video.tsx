@@ -63,7 +63,6 @@ const VideoCard = ({
 
   return (
     <View style={styles.captureCard}>
-      {/* Card Header */}
       <View style={styles.cardHeader}>
         <View style={styles.headerLeft}>
           <View
@@ -84,7 +83,6 @@ const VideoCard = ({
         </View>
 
         <View style={styles.headerRight}>
-          {/* ORIGINAL Delete Button */}
           <TouchableOpacity
             style={[
               styles.deleteIconBtn,
@@ -102,7 +100,6 @@ const VideoCard = ({
         </View>
       </View>
 
-      {/* Capture Preview (Replaced with Video Player) */}
       <Video
         key={`${item.public_id}-${refreshVersion}`}
         ref={videoRef}
@@ -117,7 +114,6 @@ const VideoCard = ({
       />
       <Text style={styles.date}>Uploaded: {uploadDate}</Text>
 
-      {/* Card Footer (Replaced with Download Button) */}
       <View style={styles.cardFooter}>
         <TouchableOpacity
           style={[styles.downloadBtn, isDownloading && styles.downloadBtnDisabled]}
