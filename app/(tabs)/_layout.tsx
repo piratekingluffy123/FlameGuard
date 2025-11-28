@@ -10,8 +10,8 @@ const hideSystemBars = async () => {
   if (Platform.OS === 'android') {
     try {
       // 1. Force the bar to be hidden
-      await NavigationBar.setVisibilityAsync('hidden'); 
-      
+      await NavigationBar.setVisibilityAsync('hidden');
+
       // 2. Set the behavior to 'overlay-swipe' (Android Immersive Sticky Mode)
       // This is the CRUCIAL part that makes the home/back buttons disappear 
       // and only temporarily reappear on an explicit swipe from the edge.
@@ -41,7 +41,7 @@ const useDisableBackButton = () => {
 };
 
 export default function RootLayout() {
-  
+
   // 1. Apply Full-Screen Mode and Reapply on Focus
   useEffect(() => { // <-- NEW LOGIC
     hideSystemBars();
@@ -65,9 +65,10 @@ export default function RootLayout() {
     <>
       {/* 3. Hide the top Status Bar (Time/Battery/Notifications) */}
       <StatusBar hidden={true} /> {/* <-- NEW */}
-      
+
       <Tabs
         screenOptions={{
+          headerShown: false,
           tabBarActiveTintColor: "#ef4444",
           tabBarInactiveTintColor: "#94a3b8",
           tabBarStyle: {
@@ -92,7 +93,7 @@ export default function RootLayout() {
           },
           // If you want the app's *internal* header bar gone too, uncomment this:
           // headerShown: false, 
-          
+
           headerStyle: {
             backgroundColor: "#fff",
             borderBottomWidth: 1,
@@ -124,10 +125,10 @@ export default function RootLayout() {
         <Tabs.Screen
           name="stations"
           options={{
-            title: "Fire Stations",
-            tabBarLabel: "Stations",
+            title: "Maps",
+            tabBarLabel: "Maps",
             tabBarIcon: ({ color, size }) => (
-              <Ionicons name="call-outline" size={size} color={color} />
+              <Ionicons name="map" size={size} color={color} />
             ),
           }}
         />
@@ -145,9 +146,19 @@ export default function RootLayout() {
           name="video"
           options={{
             title: "Fire History",
-            tabBarLabel: "Videos", 
+            tabBarLabel: "Videos",
             tabBarIcon: ({ color, size }) => (
               <Ionicons name="albums-outline" size={size} color={color} />
+            ),
+          }}
+        />
+        <Tabs.Screen
+          name="stationsList"
+          options={{
+            title: "Stations",
+            tabBarLabel: "Stations",
+            tabBarIcon: ({ color, size }) => (
+              <Ionicons name="call-outline" size={size} color={color} />
             ),
           }}
         />

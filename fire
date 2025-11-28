@@ -1,0 +1,715 @@
+#!/usr/bin/env python3
+import os
+import cv2
+import time
+import numpy as np
+from datetime import datetime
+from ultralytics import YOLO
+from flask import Flask, Response, stream_with_context, jsonify, request
+import subprocess
+import re
+import qrcode
+import socket
+import threading
+import cloudinary
+import cloudinary.uploader
+import json
+import requests
+import sqlite3
+import serial
+from supabase import create_client, Client
+from concurrent.futures import ThreadPoolExecutor, as_completed
+from queue import Queue
+
+# ------------------- CONFIGURATION -------------------
+CCTV_ID = "CCTV_001"
+
+SUPABASE_URL = "https://xlfjnlroosriwqpfzyhj.supabase.co"
+SUPABASE_KEY = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6InhsZmpubHJvb3NyaXdxcGZ6eWhqIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NjM1ODIzMDIsImV4cCI6MjA3OTE1ODMwMn0.FzDmvXk6xSnju11RcPIKSgml7UD64JIkQdCxQznpXFI"
+FCM_SERVER_URL = "https://flameguard-backend-1.onrender.com/send-notification"
+
+supabase: Client = create_client(SUPABASE_URL, SUPABASE_KEY)
+
+# ------------------- SMS Configuration -------------------
+SMS_SERIAL_PORT = "/dev/ttyAMA0"
+
+# SMS Serial Lock - CRITICAL for thread-safe SMS sending
+sms_lock = threading.Lock()
+
+ser = None
+try:
+    ser = serial.Serial(SMS_SERIAL_PORT, baudrate=115200, timeout=1)
+    print(f"SMS modem connected on {SMS_SERIAL_PORT}")
+except Exception as e:
+    print(f"WARNING: Failed to connect to SMS modem. Error: {e}")
+
+# Thread pool for concurrent notifications
+notification_executor = ThreadPoolExecutor(max_workers=20, thread_name_prefix="NotifWorker")
+
+def send_at(cmd, delay=1):
+    """Send AT command - must be called within sms_lock context"""
+    if ser is None: 
+        return
+    try:
+        ser.write((cmd + "\r\n").encode())
+        time.sleep(delay)
+        while ser.in_waiting:
+            print(f"[AT-SMS] {ser.readline().decode(errors='ignore').strip()}")
+    except Exception as e:
+        print(f"Error in send_at({cmd}): {e}")
+
+def format_phone_number(phone):
+    """Format phone number to international format"""
+    cleaned = re.sub(r'[^\d+]', '', phone)
+    
+    if cleaned.startswith('09') and len(cleaned) == 11:
+        return '+63' + cleaned[1:]
+    elif cleaned.startswith('9') and len(cleaned) == 10:
+        return '+63' + cleaned
+    elif cleaned.startswith('+63') and len(cleaned) == 13:
+        return cleaned
+    elif cleaned.startswith('63') and len(cleaned) == 12:
+        return '+' + cleaned
+    else:
+        print(f"⚠️ Invalid phone number format: {phone}")
+        return None
+
+def send_sms(number, message):
+    """Send SMS to a specific phone number with thread-safe serial access"""
+    if ser is None:
+        print("❌ SMS Failed: Serial port not initialized.")
+        return False
+    
+    # Acquire lock to ensure only one thread uses serial port at a time
+    with sms_lock:
+        print(f"📠 Sending SMS to {number}...")
+        try:
+            send_at("AT")
+            send_at("ATE0")
+            send_at("AT+CMGF=1")
+            ser.write(('AT+CMGS="{}"\r\n'.format(number)).encode())
+            time.sleep(0.5)
+            ser.write((message + "\x1A").encode())
+            time.sleep(5)  # Wait for SMS to be sent
+            print(f"✅ SMS sent to {number}.")
+            return True
+        except Exception as e:
+            print(f"❌ Failed to send SMS to {number}: {e}")
+            return False
+
+# ------------------- NOTIFICATION FUNCTIONS -------------------
+def send_fcm_notification(fcm_token, title, body):
+    try:
+        payload = {"fcmToken": fcm_token, "title": title, "body": body}
+        response = requests.post(FCM_SERVER_URL, json=payload, timeout=10)
+        if response.status_code == 200:
+            print(f"✅ FCM notification sent to token: {fcm_token[:20]}...")
+            return True
+        else:
+            print(f"❌ Failed to send FCM notification: {response.status_code}")
+            return False
+    except Exception as e:
+        print(f"❌ Error sending FCM notification: {e}")
+        return False
+
+def send_bulk_notifications(devices, title, body, detection_id):
+    """Send notifications to ALL devices concurrently, but only one SMS per phone"""
+    print(f"🚀 Starting concurrent notifications to {len(devices)} devices...")
+    start_time = time.time()
+
+    sms_futures = []
+    fcm_futures = []
+    sms_count = 0
+    fcm_count = 0
+
+    # Keep track of unique phones already scheduled for SMS
+    unique_phones = set()
+
+    for device in devices:
+        phone_number = device.get('phonenumber')
+        fcm_token = device.get('fcmToken')
+
+        # FORMAT PHONE AND ENSURE UNIQUE SMS
+        formatted_phone = None
+        if phone_number and phone_number.strip():
+            formatted_phone = format_phone_number(phone_number.strip())
+            if formatted_phone in unique_phones:
+                formatted_phone = None  # Already scheduled, skip SMS
+            elif formatted_phone:
+                unique_phones.add(formatted_phone)
+
+        # Submit SMS task if valid
+        if formatted_phone:
+            future = notification_executor.submit(send_sms, formatted_phone, body)
+            sms_futures.append(future)
+            sms_count += 1
+
+        # Submit FCM task if token valid
+        if fcm_token and fcm_token.strip() and has_internet():
+            # Save to Supabase notifications table
+            try:
+                supabase.table('notifications').insert({
+                    'cctv_id': CCTV_ID,
+                    'fcm_token': fcm_token,
+                    'title': title,
+                    'body': body,
+                    'type': 'fire',
+                    'is_read': False,
+                    'created_at': datetime.now().isoformat()
+                }).execute()
+                print(f"💾 Notification saved to Supabase for token: {fcm_token[:20]}...")
+            except Exception as e:
+                print(f"❌ Error saving to Supabase for token {fcm_token[:20]}...: {e}")
+
+            future = notification_executor.submit(send_fcm_notification, fcm_token, title, body)
+            fcm_futures.append(future)
+            fcm_count += 1
+
+    print(f"📱 Submitted {sms_count} SMS and {fcm_count} FCM notifications concurrently")
+
+    # Wait for all SMS to complete
+    sms_success = 0
+    for future in as_completed(sms_futures):
+        try:
+            if future.result():
+                sms_success += 1
+        except Exception as e:
+            print(f"❌ SMS task failed: {e}")
+
+    # Wait for all FCM to complete
+    fcm_success = 0
+    for future in as_completed(fcm_futures):
+        try:
+            if future.result():
+                fcm_success += 1
+        except Exception as e:
+            print(f"❌ FCM task failed: {e}")
+
+    # Update DB
+    if sms_success > 0 and detection_id:
+        update_db_status('sms_sent', detection_id)
+    if fcm_success > 0 and detection_id:
+        update_db_status('push_sent', detection_id)
+
+    elapsed_time = time.time() - start_time
+    print(f"✅ Notifications completed in {elapsed_time:.2f}s: {sms_success}/{sms_count} SMS, {fcm_success}/{fcm_count} FCM")
+
+# ------------------- Camera Config -------------------
+USERNAME = "admin"
+PASSWORD_ENCODED = "g%21g%40w0rkz"
+IP = "192.168.1.104"
+PORT = 554
+STREAM_PATH = "cam/realmonitor?channel=1&subtype=0"
+RTSP_URL = f"rtsp://{USERNAME}:{PASSWORD_ENCODED}@{IP}:{PORT}/{STREAM_PATH}"
+
+REQUESTED_WIDTH = 1920
+REQUESTED_HEIGHT = 1080
+REQUESTED_FPS = 20
+RECONNECT_DELAY = 5
+
+# ------------------- Setup -------------------
+app = Flask(__name__)
+MODEL_PATH = "best_ncnn_model"
+model = YOLO(MODEL_PATH)
+labels = model.names
+
+SAVE_DIR = "/home/user1/yolo/videos"
+UPLOAD_QUEUE_FILE = os.path.join(SAVE_DIR, "upload_queue.json")
+os.makedirs(SAVE_DIR, exist_ok=True)
+
+DB_FILE = os.path.join(SAVE_DIR, "detections.db")
+
+def initialize_database():
+    conn = sqlite3.connect(DB_FILE, check_same_thread=False)
+    cursor = conn.cursor()
+    cursor.execute('''CREATE TABLE IF NOT EXISTS detections (
+        id INTEGER PRIMARY KEY AUTOINCREMENT, timestamp DATETIME NOT NULL,
+        confidence REAL, video_path TEXT, push_sent BOOLEAN NOT NULL DEFAULT 0, 
+        sms_sent BOOLEAN NOT NULL DEFAULT 0, cctv_id TEXT)''')
+    conn.commit()
+    conn.close()
+    print("Database initialized.")
+
+def update_db_status(column, detection_id, value=1):
+    if detection_id is None: return
+    try:
+        conn = sqlite3.connect(DB_FILE, check_same_thread=False)
+        cursor = conn.cursor()
+        cursor.execute(f"UPDATE detections SET {column} = ? WHERE id = ?", (value, detection_id))
+        conn.commit()
+        conn.close()
+    except Exception as e:
+        print(f"DB Update Failed for ID {detection_id}: {e}")
+
+cloudinary.config(
+    cloud_name=os.getenv("CLOUDINARY_CLOUD_NAME", "djtzvegll"),
+    api_key=os.getenv("CLOUDINARY_API_KEY", "542598738595935"),
+    api_secret=os.getenv("CLOUDINARY_API_SECRET", "zXHXXtfWlSMONbTVaWhOm-2SPls")
+)
+
+# ------------------- RTSP Grabber -------------------
+class RTSPGrabber(threading.Thread):
+    def __init__(self, url):
+        super().__init__(daemon=True)
+        self.url = url
+        self.cap = None
+        self.running = True
+        self.lock = threading.Lock()
+        self.latest_frame = None
+        self.connected = False
+
+    def open_capture(self):
+        try:
+            cap = cv2.VideoCapture(self.url, cv2.CAP_FFMPEG)
+        except:
+            cap = cv2.VideoCapture(self.url)
+        try:
+            cap.set(cv2.CAP_PROP_BUFFERSIZE, 1)
+            cap.set(cv2.CAP_PROP_FRAME_WIDTH, REQUESTED_WIDTH)
+            cap.set(cv2.CAP_PROP_FRAME_HEIGHT, REQUESTED_HEIGHT)
+            cap.set(cv2.CAP_PROP_FPS, REQUESTED_FPS)
+        except:
+            pass
+        time.sleep(0.3)
+        return cap
+
+    def run(self):
+        while self.running:
+            if self.cap is None or not self.cap.isOpened():
+                print("Attempting to open RTSP stream...")
+                try:
+                    if self.cap:
+                        try: self.cap.release()
+                        except: pass
+                    self.cap = self.open_capture()
+                    if self.cap.isOpened():
+                        self.connected = True
+                        print("RTSP opened.")
+                    else:
+                        self.connected = False
+                        print(f"Failed to open RTSP. Retrying in {RECONNECT_DELAY}s...")
+                        time.sleep(RECONNECT_DELAY)
+                        continue
+                except Exception as e:
+                    self.connected = False
+                    print("Exception while opening RTSP:", e)
+                    time.sleep(RECONNECT_DELAY)
+                    continue
+            try:
+                ret, frame = self.cap.read()
+            except Exception as e:
+                ret, frame = False, None
+            if not ret or frame is None:
+                if self.connected:
+                    print("Lost frames from RTSP - will reconnect.")
+                self.connected = False
+                try: self.cap.release()
+                except: pass
+                time.sleep(RECONNECT_DELAY)
+                continue
+            with self.lock:
+                self.latest_frame = frame
+            time.sleep(0.005)
+
+    def get_frame(self):
+        with self.lock:
+            return None if self.latest_frame is None else self.latest_frame.copy()
+
+    def stop(self):
+        self.running = False
+        try:
+            if self.cap: self.cap.release()
+        except: pass
+
+grabber = RTSPGrabber(RTSP_URL)
+grabber.start()
+
+# ------------------- Upload Queue -------------------
+class UploadQueue:
+    def __init__(self, queue_file):
+        self.queue_file = queue_file
+        self.lock = threading.Lock()
+    def add(self, file_path):
+        with self.lock:
+            q = self._load_queue()
+            if file_path not in q:
+                q.append(file_path)
+                self._save_queue(q)
+    def remove(self, file_path):
+        with self.lock:
+            q = self._load_queue()
+            if file_path in q:
+                q.remove(file_path)
+                self._save_queue(q)
+    def get_pending(self):
+        with self.lock:
+            return self._load_queue()
+    def _load_queue(self):
+        if os.path.exists(self.queue_file):
+            try:
+                with open(self.queue_file, 'r') as f:
+                    return json.load(f)
+            except: return []
+        return []
+    def _save_queue(self, q):
+        with open(self.queue_file, 'w') as f:
+            json.dump(q, f, indent=2)
+
+upload_queue = UploadQueue(UPLOAD_QUEUE_FILE)
+
+def upload_to_cloudinary(file_path):
+    if not os.path.exists(file_path):
+        upload_queue.remove(file_path)
+        return None
+    try:
+        filename = os.path.basename(file_path)
+        result = cloudinary.uploader.upload(file_path, public_id=f"fire_videos/{os.path.splitext(filename)[0]}", resource_type="video", timeout=120)
+        video_url = result["secure_url"]
+        conn = sqlite3.connect(DB_FILE, check_same_thread=False)
+        cursor = conn.cursor()
+        cursor.execute("UPDATE detections SET video_path = ? WHERE video_path = ?", (video_url, file_path))
+        conn.commit()
+        conn.close()
+        upload_queue.remove(file_path)
+        return video_url
+    except Exception as e:
+        print(f"Cloudinary upload failed: {e}")
+        return None
+
+def process_upload_queue():
+    while True:
+        time.sleep(30)
+        if not has_internet(): continue
+        pending = upload_queue.get_pending()
+        for fp in pending[:]:
+            if os.path.exists(fp):
+                upload_to_cloudinary(fp)
+                time.sleep(2)
+            else:
+                upload_queue.remove(fp)
+
+# ------------------- Fire Recorder (NON-BLOCKING) -------------------
+class FireRecorder:
+    def __init__(self, output_dir, record_duration=10):
+        self.output_dir = output_dir
+        self.record_duration = record_duration
+        self.last_fire_time = 0
+        self.is_recording = False
+        self.writer = None
+        self.current_filename = None
+        self.notification_sent_this_event = False
+        self.current_detection_id = None
+        self.lock = threading.Lock()
+        self.frame_queue = Queue(maxsize=100)
+        self.recording_thread = None
+        self._stop_recording = False
+        self._shutdown_event = threading.Event()
+
+    def _recording_worker(self):
+        """Worker thread that processes frames from the queue"""
+        while not self._shutdown_event.is_set():
+            try:
+                # Use a timeout to periodically check for shutdown
+                item = self.frame_queue.get(timeout=0.5)
+                if item is None:  # Shutdown signal
+                    break
+                frame, writer = item
+                if writer and writer.isOpened():
+                    writer.write(frame)
+                self.frame_queue.task_done()
+            except:
+                # Timeout or empty queue - check if we should shutdown
+                continue
+
+    def update(self, frame, is_confirmed_fire, confidence, cctv_id):
+        now = time.time()
+        
+        if is_confirmed_fire:
+            self.last_fire_time = now
+            if not self.is_recording:
+                with self.lock:
+                    if self.is_recording:  # Double check after acquiring lock
+                        return
+                    self.is_recording = True
+                    self._stop_recording = False
+                    self._shutdown_event.clear()
+                
+                timestamp_dt = datetime.now()
+                # Insert to DB synchronously but quickly
+                try:
+                    conn = sqlite3.connect(DB_FILE, check_same_thread=False)
+                    cursor = conn.cursor()
+                    cursor.execute('INSERT INTO detections (timestamp, confidence, cctv_id) VALUES (?, ?, ?)',
+                                (timestamp_dt, confidence, cctv_id))
+                    conn.commit()
+                    self.current_detection_id = cursor.lastrowid
+                    conn.close()
+                    print(f"🔥 Fire confirmed! Logged to DB with ID: {self.current_detection_id} for {cctv_id}")
+                except Exception as e:
+                    print(f"❌ DB insert error: {e}")
+                
+                timestamp_str = timestamp_dt.strftime("%Y-%m-%d_%H-%M-%S")
+                h, w = frame.shape[:2]
+                
+                # Use CCTV ID in filename - FIRE_CAMERA_001_2024-01-15_14-30-45.avi
+                self.current_filename = os.path.join(self.output_dir, f"FIRE_{cctv_id}_{timestamp_str}.avi")
+                
+                fourcc = cv2.VideoWriter_fourcc(*'MJPG')
+                self.writer = cv2.VideoWriter(self.current_filename, fourcc, 20, (w, h))
+                
+                if not self.writer.isOpened():
+                    print(f"❌ Failed to open video writer")
+                    with self.lock:
+                        self.is_recording = False
+                    return
+                
+                print(f"🎥 Recording started: {self.current_filename}")
+                update_db_status('video_path', self.current_detection_id, value=self.current_filename)
+                
+                # Start recording thread
+                self.recording_thread = threading.Thread(target=self._recording_worker, daemon=True)
+                self.recording_thread.start()
+                
+                self.notification_sent_this_event = True
+        else:
+            if not self.is_recording:
+                self.notification_sent_this_event = False
+                self.current_detection_id = None
+
+        # Add frame to queue if recording
+        if self.is_recording and self.writer and not self._stop_recording:
+            try:
+                # Don't block if queue is full
+                self.frame_queue.put_nowait((frame.copy(), self.writer))
+            except:
+                # Queue is full, skip this frame
+                pass
+            
+            # Check if recording duration has elapsed
+            if now - self.last_fire_time > self.record_duration:
+                self.stop()
+
+    def stop(self):
+        """Safely stop recording and cleanup resources"""
+        print("DEBUG: FireRecorder.stop() called")
+        
+        with self.lock:
+            if not self.is_recording:
+                return
+                
+            self.is_recording = False
+            self._stop_recording = True
+            self._shutdown_event.set()
+
+        # Wait a moment for the worker thread to finish current operation
+        time.sleep(0.1)
+        
+        # Clear the queue safely
+        while not self.frame_queue.empty():
+            try:
+                self.frame_queue.get_nowait()
+                self.frame_queue.task_done()
+            except:
+                break
+
+        # Close writer safely
+        if self.writer:
+            try:
+                self.writer.release()
+            except Exception as e:
+                print(f"Warning: Error releasing writer: {e}")
+            finally:
+                self.writer = None
+
+        # Wait for recording thread to finish
+        if self.recording_thread and self.recording_thread.is_alive():
+            self.recording_thread.join(timeout=2.0)
+
+        print("ℹ️ Recording stopped.")
+        
+        # Queue video for upload
+        if self.current_filename and os.path.exists(self.current_filename):
+            upload_queue.add(self.current_filename)
+            print(f"📤 Queued for upload: {self.current_filename}")
+
+recorder = FireRecorder(SAVE_DIR)
+
+# ------------------- Frame Generator -------------------
+def generate_frames():
+    print("Starting MJPEG stream with YOLO detection...")
+    avg_fps = []
+    last_log_time = time.time()
+    LOW_CONF_THRESHOLD = 0.2
+    FRAMES_TO_CONFIRM = 12
+    fire_persistence_counter = 0
+
+    while True:
+        frame = grabber.get_frame()
+        if frame is None:
+            time.sleep(0.05)
+            continue
+        start = time.perf_counter()
+        try:
+            results = model(frame, imgsz=640, verbose=False)
+            detections = results[0].boxes
+        except Exception as e:
+            print(f"YOLO inference error: {e}")
+            time.sleep(0.05)
+            continue
+
+        fire_detected_this_frame = False
+        current_conf_val = 0.0
+
+        for box in detections:
+            try:
+                cls_id = int(box.cls[0])
+                label = labels[cls_id].lower()
+                conf = float(box.conf[0])
+                if label != "fire" or conf < LOW_CONF_THRESHOLD: continue
+                x1, y1, x2, y2 = map(int, box.xyxy[0])
+                width, height = x2 - x1, y2 - y1
+                if height <= 0 or width < 10 or height < 10: continue
+                aspect_ratio = width / height
+                if aspect_ratio > 3.5: continue
+                fire_region = frame[y1:y2, x1:x2]
+                if fire_region.size == 0: continue
+                hsv = cv2.cvtColor(fire_region, cv2.COLOR_BGR2HSV)
+                mask = cv2.inRange(hsv, (0, 100, 100), (35, 255, 255))
+                fire_pixel_ratio = np.sum(mask > 0) / (width * height)
+                if fire_pixel_ratio < 0.1: continue
+                if np.mean(fire_region) < 100: continue
+                fire_detected_this_frame = True
+                current_conf_val = conf
+                cv2.rectangle(frame, (x1, y1), (x2, y2), (0, 165, 255), 2)
+                cv2.putText(frame, f"{label.upper()} {conf:.2f}", (x1, y1 - 5), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 165, 255), 2)
+                break
+            except: continue
+
+        if fire_detected_this_frame:
+            fire_persistence_counter += 1
+        else:
+            fire_persistence_counter = 0
+
+        is_confirmed_fire = fire_persistence_counter >= FRAMES_TO_CONFIRM
+        recorder.update(frame, is_confirmed_fire, current_conf_val)
+
+        fps = 1 / (time.perf_counter() - start)
+        avg_fps.append(fps)
+        avg_fps = avg_fps[-30:]
+        cv2.putText(frame, f"FPS: {np.mean(avg_fps):.1f}", (10, 30), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (255, 255, 0), 2)
+        if is_confirmed_fire:
+            cv2.putText(frame, f"FIRE DETECTED - {CCTV_ID}", (10, 60), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 0, 255), 2)
+        status = "CONNECTED" if grabber.connected else "DISCONNECTED"
+        cv2.putText(frame, status, (10, 90), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 255, 0) if grabber.connected else (0, 0, 255), 2)
+
+        ret, buffer = cv2.imencode('.jpg', frame, [cv2.IMWRITE_JPEG_QUALITY, 85])
+        if not ret: continue
+        yield b'--frame\r\nContent-Type: image/jpeg\r\n\r\n' + buffer.tobytes() + b'\r\n'
+
+        if time.time() - last_log_time > 5:
+            print(f"📊 Avg FPS: {np.mean(avg_fps):.2f} | Connected: {grabber.connected} | Fire: {fire_persistence_counter}/{FRAMES_TO_CONFIRM}")
+            last_log_time = time.time()
+        time.sleep(0.01)
+
+# ------------------- Flask Routes -------------------
+@app.route('/')
+def index():
+    return f"<html><body><h2>Flame Guard - {CCTV_ID}</h2><a href='/video'>MJPEG Stream</a></body></html>"
+
+@app.route('/video')
+def video_mjpeg():
+    return Response(stream_with_context(generate_frames()), mimetype='multipart/x-mixed-replace; boundary=frame')
+
+@app.route('/register-device', methods=['POST'])
+def register_device():
+    try:
+        data = request.json
+        fcm_token = data.get('fcm_token')
+        phone_number = data.get('phone_number')  # Optional
+        
+        if not fcm_token:
+            return jsonify({'success': False, 'error': 'Missing fcm_token'}), 400
+        
+        # Prepare data for upsert
+        device_data = {'fcmToken': fcm_token, 'cctvId': CCTV_ID}
+        if phone_number:
+            device_data['phonenumber'] = phone_number
+        
+        supabase.table('deviceTokens').upsert(device_data, on_conflict='fcmToken').execute()
+        print(f"✅ Device registered: {fcm_token[:20]}... for {CCTV_ID}")
+        
+        return jsonify({'success': True, 'cctv_id': CCTV_ID}), 200
+    except Exception as e:
+        print(f"❌ Registration error: {e}")
+        return jsonify({'success': False, 'error': str(e)}), 500
+
+@app.route('/cctv-info', methods=['GET'])
+def cctv_info():
+    return jsonify({'cctv_id': CCTV_ID, 'status': 'online' if grabber.connected else 'offline'}), 200
+
+# ------------------- Helpers -------------------
+def has_internet():
+    try:
+        socket.create_connection(("8.8.8.8", 53), timeout=3)
+        return True
+    except: return False
+
+def show_qr(url, label=""):
+    qr = qrcode.QRCode()
+    qr.add_data(url)
+    qr.make()
+    qr.print_ascii(invert=True)
+    print(f"\n{label}Scan QR: {url}\n")
+
+def get_local_ip():
+    try:
+        s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        s.connect(("8.8.8.8", 80))
+        ip = s.getsockname()[0]
+        s.close()
+        return ip
+    except: return "localhost"
+
+def run_cloudflare(port):
+    tunnel_process = None
+    while True:
+        if has_internet():
+            if tunnel_process is None or tunnel_process.poll() is not None:
+                print("🌐 Starting Cloudflare Tunnel...")
+                tunnel_process = subprocess.Popen(["cloudflared", "tunnel", "--url", f"http://localhost:{port}"], stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True)
+                public_url = None
+                for line in tunnel_process.stdout:
+                    match = re.search(r"https://[-a-zA-Z0-9]+\.trycloudflare\.com", line)
+                    if match:
+                        public_url = match.group(0)
+                        print(f"🌍 Public URL: {public_url}/video")
+                        break
+                # Generate QR code AFTER breaking from the loop
+                if public_url:
+                    show_qr(f"{public_url}/video", "Cloudflare - ")
+        else:
+            if tunnel_process:
+                tunnel_process.terminate()
+                tunnel_process = None
+        time.sleep(10)
+
+# ------------------- Main -------------------
+if __name__ == '__main__':
+    port = 5000
+    initialize_database()
+    print(f"🔥 Flame Guard Started! CCTV ID: {CCTV_ID}")
+    local_ip = get_local_ip()
+    print(f"🏠 Local URL: http://{local_ip}:{port}/video")
+    show_qr(f"http://{local_ip}:{port}/video", "Local - ")
+    threading.Thread(target=process_upload_queue, daemon=True).start()
+    threading.Thread(target=run_cloudflare, args=(port,), daemon=True).start()
+    try:
+        app.run(host='0.0.0.0', port=port, threaded=True)
+    except KeyboardInterrupt:
+        print("\n🛑 Stopping...")
+    finally:
+        grabber.stop()
+        recorder.stop()
+        notification_executor.shutdown(wait=False)
+        if ser and ser.is_open: ser.close()
+        print("👋 Flame Guard stopped.")
