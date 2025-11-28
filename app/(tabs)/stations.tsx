@@ -110,12 +110,12 @@ const fetchNearbyFireStations = async (
     });
 
     const stations = await Promise.all(stationsPromises);
-    console.log(`📍 Total found: ${stations.length} fire stations`);
+    console.log(`Total found: ${stations.length} fire stations`);
 
     return stations;
 
   } catch (error) {
-    console.error('💥 Error fetching fire stations:', error);
+    console.error('Error fetching fire stations:', error);
     throw error;
   }
 };
@@ -493,179 +493,173 @@ export default function Stations() {
   }
 
   return (
-    <View style={styles.container}>
-      {/* Header with location info */}
-      <View style={styles.header}>
-        <View style={styles.locationHeader}>
-          <Ionicons name="navigate" size={20} color="#FF4444" />
-          <Text style={styles.locationText}>
-            {filteredStations.length} fire stations within 5km radius
-          </Text>
+    <>
+      <View style={styles.container}>
+        {/* Header with location info */}
+        <View style={styles.header}>
+          <View style={styles.locationHeader}>
+            <Ionicons name="navigate" size={20} color="#FF4444" />
+            <Text style={styles.locationText}>
+              {filteredStations.length} fire stations within 5km radius
+            </Text>
+          </View>
+          <TouchableOpacity style={styles.refreshButton} onPress={handleRefreshLocation}>
+            <Ionicons name="refresh" size={20} color="#FF4444" />
+          </TouchableOpacity>
         </View>
-        <TouchableOpacity style={styles.refreshButton} onPress={handleRefreshLocation}>
-          <Ionicons name="refresh" size={20} color="#FF4444" />
-        </TouchableOpacity>
-      </View>
 
-      {apiError && (
-        <View style={styles.apiErrorContainer}>
-          <Ionicons name="warning" size={16} color="#FFA000" />
-          <Text style={styles.apiErrorText}>{apiError}</Text>
-        </View>
-      )}
-
-      {/* Search */}
-      <View style={styles.searchContainer}>
-        <TextInput
-          style={styles.searchInput}
-          placeholder="Search fire stations..."
-          placeholderTextColor={'#666'}
-          value={searchQuery}
-          onChangeText={handleSearch}
-        />
-      </View>
-
-      {/* Suggestions */}
-      {suggestions.length > 0 && (
-        <View style={styles.suggestionBox}>
-          {suggestions.map((station) => (
-            <TouchableOpacity
-              key={station.id}
-              style={styles.suggestionItem}
-              onPress={() => selectSuggestion(station.name)}
-            >
-              <Text style={styles.suggestionText}>{station.name}</Text>
-            </TouchableOpacity>
-          ))}
-        </View>
-      )}
-
-      {/* MapView */}
-      <MapView
-        style={styles.map}
-        initialRegion={{
-          latitude: userLocation?.latitude || 8.4542,
-          longitude: userLocation?.longitude || 124.6319,
-          latitudeDelta: 0.05,
-          longitudeDelta: 0.05,
-        }}
-        region={userLocation ? {
-          latitude: userLocation.latitude,
-          longitude: userLocation.longitude,
-          latitudeDelta: 0.05,
-          longitudeDelta: 0.05,
-        } : undefined}
-        showsUserLocation={true}
-        showsMyLocationButton={true}
-      >
-        {/* User location marker */}
-        {userLocation && (
-          <Marker
-            coordinate={userLocation}
-            title="Your Location"
-            pinColor="blue"
-          />
+        {apiError && (
+          <View style={styles.apiErrorContainer}>
+            <Ionicons name="warning" size={16} color="#FFA000" />
+            <Text style={styles.apiErrorText}>{apiError}</Text>
+          </View>
         )}
 
-        {/* Fire station markers */}
-        {filteredStations.map((station) => (
-          <Marker
-            key={station.id}
-            coordinate={{
-              latitude: station.latitude,
-              longitude: station.longitude
-            }}
-            title={station.name}
-            description={station.address}
-            pinColor="red"
+        {/* Search */}
+        <View style={styles.searchContainer}>
+          <TextInput
+            style={styles.searchInput}
+            placeholder="Search fire stations..."
+            placeholderTextColor={'#666'}
+            value={searchQuery}
+            onChangeText={handleSearch}
           />
-        ))}
-      </MapView>
+        </View>
 
-      {/* Stations List */}
-      <KeyboardAwareScrollView
-        style={styles.scrollView}
-        contentContainerStyle={styles.scrollContent}
-        keyboardShouldPersistTaps="handled"
-      >
-        {filteredStations.map((station) => (
-          <View key={station.id} style={styles.stationCard}>
-            <View style={styles.stationHeader}>
-              <View style={styles.iconContainer}>
-                <Ionicons name="flame" size={24} color="#FF4444" />
-              </View>
-              <View style={styles.stationInfo}>
-                <Text style={styles.stationName}>{station.name}</Text>
-                <View style={styles.stationMeta}>
-                  {userLocation && (
-                    <Text style={styles.distanceText}>
-                      {calculateDistance(userLocation.latitude, userLocation.longitude, station.latitude, station.longitude).toFixed(1)} km away
-                    </Text>
-                  )}
-                  {station.rating && (
-                    <View style={styles.ratingContainer}>
-                      <Ionicons name="star" size={12} color="#FFD700" />
-                      <Text style={styles.ratingText}>{station.rating.toFixed(1)}</Text>
-                    </View>
-                  )}
-                  {station.isOpen !== undefined && (
-                    <Text style={[styles.statusText, station.isOpen ? styles.openText : styles.closedText]}>
-                      {station.isOpen ? 'Open' : 'Closed'}
-                    </Text>
-                  )}
+        {/* Suggestions */}
+        {suggestions.length > 0 && (
+          <View style={styles.suggestionBox}>
+            {suggestions.map((station) => (
+              <TouchableOpacity
+                key={station.id}
+                style={styles.suggestionItem}
+                onPress={() => selectSuggestion(station.name)}
+              >
+                <Text style={styles.suggestionText}>{station.name}</Text>
+              </TouchableOpacity>
+            ))}
+          </View>
+        )}
+
+        {/* MapView */}
+        <MapView
+          style={styles.map}
+          initialRegion={{
+            latitude: userLocation?.latitude || 8.4542,
+            longitude: userLocation?.longitude || 124.6319,
+            latitudeDelta: 0.05,
+            longitudeDelta: 0.05,
+          }}
+          region={userLocation ?
+            {
+              latitude: userLocation.latitude,
+              longitude: userLocation.longitude,
+              latitudeDelta: 0.05,
+              longitudeDelta: 0.05,
+            } : undefined}
+          showsUserLocation={true} // Keep this for the automatic blue circle/dot
+          showsMyLocationButton={true}
+        >
+          {/* Only include the red fire station markers */}
+          {filteredStations.map((station) => (
+            <Marker
+              key={station.id}
+              coordinate={{
+                latitude: station.latitude,
+                longitude: station.longitude
+              }}
+              title={station.name}
+              description={station.address}
+              pinColor="red"
+            />
+          ))}
+        </MapView>
+
+        {/* Stations List */}
+        <KeyboardAwareScrollView
+          style={styles.scrollView}
+          contentContainerStyle={styles.scrollContent}
+          keyboardShouldPersistTaps="handled"
+        >
+          {filteredStations.map((station) => (
+            <View key={station.id} style={styles.stationCard}>
+              <View style={styles.stationHeader}>
+                <View style={styles.iconContainer}>
+                  <Ionicons name="flame" size={24} color="#FF4444" />
+                </View>
+                <View style={styles.stationInfo}>
+                  <Text style={styles.stationName}>{station.name}</Text>
+                  <View style={styles.stationMeta}>
+                    {userLocation && (
+                      <Text style={styles.distanceText}>
+                        {calculateDistance(userLocation.latitude, userLocation.longitude, station.latitude, station.longitude).toFixed(1)} km away
+                      </Text>
+                    )}
+                    {station.rating && (
+                      <View style={styles.ratingContainer}>
+                        <Ionicons name="star" size={12} color="#FFD700" />
+                        <Text style={styles.ratingText}>{station.rating.toFixed(1)}</Text>
+                      </View>
+                    )}
+                    {station.isOpen !== undefined && (
+                      <Text style={[styles.statusText, station.isOpen ? styles.openText : styles.closedText]}>
+                        {station.isOpen ? 'Open' : 'Closed'}
+                      </Text>
+                    )}
+                  </View>
                 </View>
               </View>
-            </View>
 
-            <View style={styles.addressRow}>
-              <Ionicons name="location-outline" size={16} color="#999" />
-              <Text style={styles.address}>{station.address}</Text>
-            </View>
+              <View style={styles.addressRow}>
+                <Ionicons name="location-outline" size={16} color="#999" />
+                <Text style={styles.address}>{station.address}</Text>
+              </View>
 
-            <View style={styles.actionRow}>
-              <TouchableOpacity
-                style={[styles.actionButton, styles.directionsButton]}
-                onPress={() => handleGetDirections(station.latitude, station.longitude, station.name)}
-              >
-                <Ionicons name="navigate" size={16} color="#fff" />
-                <Text style={styles.actionButtonText}>Directions</Text>
+              <View style={styles.actionRow}>
+                <TouchableOpacity
+                  style={[styles.actionButton, styles.directionsButton]}
+                  onPress={() => handleGetDirections(station.latitude, station.longitude, station.name)}
+                >
+                  <Ionicons name="navigate" size={16} color="#fff" />
+                  <Text style={styles.actionButtonText}>Directions</Text>
+                </TouchableOpacity>
+
+                <TouchableOpacity
+                  style={[
+                    styles.actionButton,
+                    styles.phoneButton,
+                    !station.phone && styles.disabledButton
+                  ]}
+                  onPress={() => handleCall(station.phone)}
+                  disabled={!station.phone}
+                >
+                  <Ionicons name="call" size={16} color="#fff" />
+                  <Text style={styles.actionButtonText}>
+                    {station.phone ? 'Call' : 'No Phone'}
+                  </Text>
+                </TouchableOpacity>
+              </View>
+            </View>
+          ))}
+
+          {filteredStations.length === 0 && (
+            <View style={styles.noStationsContainer}>
+              <Ionicons name="alert-circle-outline" size={48} color="#999" />
+              <Text style={styles.noStationsText}>No fire stations found within 5km radius</Text>
+              <TouchableOpacity style={styles.retryButton} onPress={handleRefreshLocation}>
+                <Text style={styles.retryButtonText}>Try Again</Text>
               </TouchableOpacity>
-
-              <TouchableOpacity
-                style={[
-                  styles.actionButton,
-                  styles.phoneButton,
-                  !station.phone && styles.disabledButton
-                ]}
-                onPress={() => handleCall(station.phone)}
-                disabled={!station.phone}
-              >
-                <Ionicons name="call" size={16} color="#fff" />
-                <Text style={styles.actionButtonText}>
-                  {station.phone ? 'Call' : 'No Phone'}
-                </Text>
-              </TouchableOpacity>
             </View>
-          </View>
-        ))}
-
-        {filteredStations.length === 0 && (
-          <View style={styles.noStationsContainer}>
-            <Ionicons name="alert-circle-outline" size={48} color="#999" />
-            <Text style={styles.noStationsText}>No fire stations found within 5km radius</Text>
-            <TouchableOpacity style={styles.retryButton} onPress={handleRefreshLocation}>
-              <Text style={styles.retryButtonText}>Try Again</Text>
-            </TouchableOpacity>
-          </View>
-        )}
-      </KeyboardAwareScrollView>
-    </View>
+          )}
+        </KeyboardAwareScrollView>
+      </View>
+    </>
   );
 }
 
 // --- STYLES ---
 const styles = StyleSheet.create({
-  container: { flex: 1, backgroundColor: "#f8f9fa" },
+  container: { flex: 1, backgroundColor: "#f8f9fa", top: 20 },
   header: {
     flexDirection: 'row',
     justifyContent: 'space-between',
@@ -751,10 +745,9 @@ const styles = StyleSheet.create({
   },
   map: {
     width: '100%',
-    height: 300,
+    height: 250,
     borderRadius: 12,
     marginBottom: 12,
-    marginHorizontal: 10,
   },
   // Permission denied styles
   permissionContainer: {
