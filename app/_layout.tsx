@@ -9,7 +9,7 @@ import React, { useEffect } from 'react';
 SplashScreen.preventAutoHideAsync();
 
 export default function RootLayout() {
-  
+
   // We are only loading the FontAwesome icons now.
   // The 'SpaceMono' font that caused the crash has been removed.
   const [loaded, error] = useFonts({
@@ -40,8 +40,12 @@ export default function RootLayout() {
   // Once loaded, render the app's navigation structure
   return (
     <Stack>
+      <Stack.Screen name="index" options={{ headerShown: false }} />
+      <Stack.Screen name="signup" options={{ headerShown: false }} />
+      <Stack.Screen name="signin" options={{ headerShown: false }} />
+      <Stack.Screen name="verification" options={{ headerShown: false }} />
       <Stack.Screen name="(tabs)" options={{ headerShown: false }} />
-      <Stack.Screen name="modal" options={{ presentation: 'modal' }} />
+      <Stack.Screen name="modal" options={{ headerShown: false, presentation: 'modal' }} />
     </Stack>
   );
 }
